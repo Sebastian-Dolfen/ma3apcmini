@@ -38,6 +38,8 @@ plugin; `ma3/lua/apc_color.lua` is legacy).
 
 | Path | Type | Purpose |
 |---|---|---|
+| [`hardware.md`](hardware.md) | reference (single file) | APC mini mk2 physical layout — pads, buttons, faders, with photo. The "what does the controller look like" reference. |
+| [`v2-plan.md`](v2-plan.md) | plan (single file) | Current v2 implementation plan: multi-device, color/wing roles, OSC schema, verification checklist. |
 | [`grandMA3_lua_overview.md`](grandMA3_lua_overview.md) | narrative (single file) | Light orientation for the Lua API surface and the landing-page split into Object-Free vs Object API. |
 | [`grandMA3_lua_functions.txt`](grandMA3_lua_functions.txt) | reference (source-of-truth) | Raw HelpLua dump. **Authoritative for signatures.** If a Markdown reference disagrees with this file, prefer the .txt. |
 | [`grandMA3_objectfree_api/`](grandMA3_objectfree_api/README.md) | reference | Object-Free Lua API (189 functions, 17 categories). Look up specific free functions like `Cmd`, `GetExecutor`, `HookObjectChange`, `SetLED`. Functions used by the APC plugin are tagged **[APC]**. Start at the [folder README](grandMA3_objectfree_api/README.md). |
