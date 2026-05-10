@@ -124,6 +124,10 @@ Most-important entry points by task:
 
 These were captured at a moment in time against MA3 2.3 / 2.3.2.0 docs and the AKAI mk2 protocol PDF v1.0. If MA3 ships 2.4 or AKAI ships a new PDF, expect drift; the practical guide has a "what's likely to change" pointer.
 
+## Workflow rules
+
+- **Never commit or push without an explicit user instruction.** Edits, file writes, and local builds are fine without asking. `git commit` and `git push` happen only when the user says so in plain words ("commit and push", "ship it", etc.). After making changes, describe what was changed and wait — do not pre-commit "to be helpful." This applies even when the change is small, even when previous commits in the same session were authorized.
+
 ## Conventions specific to this repo
 
 - All Lua-side OSC bytes are built by hand (`osc_msg`, `osc_pad4`, `be32` in `apc_color.lua`); the parser is similarly minimal and **position-based**, not type-tag-driven. Keep new messages int/string-only or upgrade the codec.
