@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Macro>
+  <Name>APC Color Setup</Name>
+  <Step>Plugin "apc_color" "APCColor.Setup seq=1 page=1"</Step>
+  <Step>Plugin "apc_color" "APCColor.Poll"</Step>
+</Macro>

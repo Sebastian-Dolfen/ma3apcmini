@@ -1,0 +1,8 @@
+midi_in: "APC mini mk2 1"
+midi_out: "APC mini mk2 3"
+midi_in2: "APC mini mk2 2"
+midi_out2: "APC mini mk2 4"
+localip: "127.0.0.1"
+localport: 8001
+remoteip: "127.0.0.1"
+remoteport: 8000
