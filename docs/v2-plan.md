@@ -229,7 +229,11 @@ Codex "nice-to-have": diff against last sent state, emit only changed pads. 64 p
 
 **Files:** `ma3/lua/apc_color2.lua` (new `read_active_cue`).
 
-`seq:CurrentChild()` per `docs/grandMA3_practical_guide/03_sequence_cue_executor.md` §3.4. Cache per polling cycle to avoid 64 reads per pad-render. Return the child handle's index in the sequence's `Children()` array, mapping to a cue number via `child.No / 1000`.
+`seq:CurrentChild()` (verified in `docs/grandMA3_lua_functions.txt:214` and `docs/grandMA3_practical_guide/03_sequence_cue_executor.md:61-67`). Cache per polling cycle to avoid 64 reads per pad-render. Return the child handle's index in the sequence's `Children()` array, mapping to a cue display number via `child.No / 1000`.
+
+**Cue number formatting note:** cue numbers are **decimal** (stored as `display × 1000`, so cue "1.5" is `No=1500`). When formatting for `Cmd()`, use `%g` after dividing — `string.format("Load Sequence %d Cue %g", seq_id, cue.No / 1000)` — not `%d`, which truncates fractional cues.
+
+**Behavior when sequence is Off** is documented as unverified (`docs/grandMA3_practical_guide/03_sequence_cue_executor.md:66-67`). Pre-flight test: read `seq:CurrentChild()` while sequence is off — expect either `nil` or the OffCue handle. Code defensively for both.
 
 ### 1.6 Pad press → load
 
@@ -238,14 +242,18 @@ Codex "nice-to-have": diff against last sent state, emit only changed pads. 64 p
 ```lua
 local cue, seq = pad_to_cue_and_sequence(dev, page, pad)
 if not cue then return end
-if state.devices[dev].loaded[seq.id] == cue.no then
+local cue_no = cue.No / 1000   -- display number; may be fractional (e.g. 1.5)
+if state.devices[dev].loaded[seq.id] == cue_no then
   state.devices[dev].loaded[seq.id] = nil   -- toggle off (unload)
 else
-  state.devices[dev].loaded[seq.id] = cue.no
-  Cmd(string.format("Load Sequence %d Cue %d", seq.id, cue.no))
+  state.devices[dev].loaded[seq.id] = cue_no
+  -- %g preserves fractional cue numbers (1.5 stays 1.5; 1.0 prints as 1)
+  Cmd(string.format("Load Sequence %d Cue %g", seq.id, cue_no))
 end
 render_leds_for_page(dev, state.devices[dev].page)
 ```
+
+`Cmd()` returns "OK" / "Syntax Error" / "Illegal Command" (`docs/grandMA3_objectfree_api/command_execution.md:52-69`). For load failures, log the result; don't silently swallow.
 
 The Load command is issued on press so MA3's executor visualization shows the loaded cue immediately. Toggle-off (deselect) does *not* issue an Unload — there is no Lua-API "unload" command; the loaded cue is naturally superseded on the next Load or Go+. This is a design choice worth surfacing to the user during testing.
 
@@ -258,19 +266,19 @@ Default button: configurable in `init` args (`fire_all_pad=63` for top-right gri
 ```lua
 local function fire_all_loaded(dev)
   local loaded = state.devices[dev].loaded
-  local cmds = {}
-  for seq_id, cue_no in pairs(loaded) do
-    table.insert(cmds, string.format("Go+ Sequence %d", seq_id))
-  end
-  if #cmds > 0 then
-    CmdIndirect(table.concat(cmds, ";"))   -- batched, non-blocking
+  for seq_id, _cue_no in pairs(loaded) do
+    -- One CmdIndirect call per sequence — fire-and-forget, non-blocking.
+    -- CmdIndirect is documented as taking a single command string
+    -- (docs/grandMA3_objectfree_api/command_execution.md:90-106);
+    -- semicolon-batched multi-command strings are NOT documented.
+    CmdIndirect(string.format("Go+ Sequence %d", seq_id))
   end
   state.devices[dev].loaded = {}
   render_leds_for_page(dev, state.devices[dev].page)
 end
 ```
 
-Use `CmdIndirect` per `docs/grandMA3_practical_guide/08_gotchas.md:60` so a 5-cue fire doesn't stall the UI. Each loaded entry is `Go+ Sequence X`, which fires the previously-Loaded cue (matches user spec exactly).
+Use `CmdIndirect` (one call per sequence — async, fire-and-forget) per `docs/grandMA3_practical_guide/08_gotchas.md:60` so a 5-cue fire doesn't stall the UI. Each loaded entry fires `Go+ Sequence X`, which advances the sequence to the previously-Loaded cue (matches user spec exactly).
 
 ### 1.8 Hello-handshake response
 
@@ -285,7 +293,8 @@ The 9 faders on the color AKAI are unassigned in the current spec. Two viable ma
 **Option A — Per-row sequence master.** Each of the 8 lower faders drives the master/intensity of the sequence currently shown on that row of the grid. Master fader (CC 56) drives `Master 2.1` (matches Node.js origin).
 - Pros: spatially intuitive — fader 3 controls the sequence whose cues are on row 3.
 - Cons: when sequences span multiple rows (cue count > 8), one fader controls the *first* row's sequence; the wrap rows have no fader. Fader assignments shift as the user pages.
-- Implementation: plugin emits `Cmd("Sequence X At <value>")` or — preferred — `SendOSC` to MA3's built-in OSC for the sequence master fader (`/Page1/Fader{exec_for_seq},i,<value>`) if the sequences are bound to executors.
+- Implementation: use the **object API** `seq:SetFader({value = pct})` where `pct = math.floor(midi_cc / 127 * 100)` (MA3 fader values are 0..100, not 0..127). Signature documented at `docs/grandMA3_object_api/faders.md:99-135`. Avoid the cmdline form `Cmd("Sequence X At …")` — that is **not a valid MA3 command** (no doc support; would silently fail).
+- Alternative if sequences are bound to executors: `SendOSC 1 "/Page1/Fader{exec},i,{pct}"` (still 0..100). Both reach the same target but the object API is more direct.
 
 **Option B — Separate wing block.** Faders map to a configurable executor block (e.g. `wing_offset = 700` → faders 701-708, master = `Master 2.1`). User programs that block freely inside MA3 — speed, intensity, effects, anything.
 - Pros: maximally flexible. Doesn't compete with the row-wise grid layout.
@@ -312,22 +321,36 @@ Either polling at 200-500ms (matches `MA3_OSC_FEEDBACK` design per `docs/grandMA
 
 For devices with `role=wing`, the plugin acts as a translator between APC MIDI events (received from bridge as `/apc/v2/input/...`) and MA3 built-in OSC (sent via `SendOSC <slot> "/Page1/Fader{n},i,{val}"` etc.). Reverse direction: poll executor state every 200ms (or hook), send LED commands back to the bridge as `/apc/v2/led/grid` / `/apc/v2/led/button`.
 
-Mapping (default, with `wing_offset = 600`):
+Mapping (default, with `wing_offset = 600`). All OSC sends use `SendOSC <slot> "<address>,<types>,<value>..."` per `docs/grandMA3_practical_guide/04_osc_in_ma3.md:54-74`. **Scale APC MIDI values 0..127 → MA3 percent 0..100** before sending.
 
-| APC element | MIDI | MA3 OSC out |
+| APC element | MIDI | MA3 OSC out (note: faders are percent 0..100, keys use `si` type tag) |
 |---|---|---|
-| Faders 1-8 | CC 48-55 | `/Page1/Fader601,i,<value>` … `/Page1/Fader608,i,<value>` |
-| Master fader | CC 56 | `/cmd ,s,"Master 2.1 At <value*100/127>"` *or* skip if user wants it independent |
-| Top-row "FADER CTRL" buttons 1-8 (VOLUME/PAN/SEND/DEVICE/↑/↓/←/→) | Note 100-107 | `/Page1/Key601,i,<1\|0>` … `/Page1/Key608,i,<1\|0>` |
-| Grid pads (8 rows × 8 col) | Note 0-63 | Configurable; default = `/Page1/Key{wing_offset+row*100+col+1}` for an 8-row exec block |
-| Scene-launch col 1-8 (CLIP STOP / SOLO / MUTE / REC ARM / SELECT / DRUM / NOTE / STOP ALL CLIPS) | Note 112-119 | Page-switch commands (`Cmd("Page +")` etc.) or executor keys, configurable |
-| SHIFT (top-right) | Note 122 | Default: `/cmd ,s,"Master 2.1 At 0"` on press, restore on release (mimics Node.js BO behavior). Configurable as a plain button if user wants modal use. |
+| Faders 1-8 | CC 48-55 | `SendOSC 1 "/Page1/Fader601,i,<pct>"` … `Fader608,i,<pct>` where `pct = math.floor(cc/127*100)` |
+| Master fader | CC 56 | `SendOSC 1 "/cmd,s,Master 2.1 At <pct>"` (or skip if user wants Master 2.1 independent of the wing) |
+| Top-row "FADER CTRL" buttons 1-8 (VOLUME/PAN/SEND/DEVICE/↑/↓/←/→) | Note 100-107 | Press: `SendOSC 1 "/Page1/Key601,si,Press,1"` … `Key608`. Release: `,si,Release,1`. (Built-in key OSC uses `si` type tag with "Press"/"Release" string per `docs/grandMA3_practical_guide/04_osc_in_ma3.md:35`.) |
+| Grid pads (8 rows × 8 col) | Note 0-63 | Configurable; default = `/Page1/Key{wing_offset+row*100+col+1},si,Press\|Release,1` for an 8-row exec block |
+| Scene-launch col 1-8 (CLIP STOP / SOLO / MUTE / REC ARM / SELECT / DRUM / NOTE / STOP ALL CLIPS) | Note 112-119 | Page-switch via `Cmd("Page +")`/`Cmd("Page 5")` (verified `docs/grandMA3_practical_guide/02_cmd_function.md:60`) or `/Page1/KeyXXX` executor keys, configurable |
+| SHIFT (top-right) | Note 122 | Default: `SendOSC 1 "/cmd,s,Master 2.1 At 0"` on press, `SendOSC 1 "/cmd,s,Master 2.1 At <stored>"` on release (mimics Node.js BO). Configurable as a plain button if user wants modal use. |
+
+`SendOSC` syntax detail: the address, type tags, and values are one comma-separated string with **no internal spaces** around the commas (`"/cmd,s,Master 2.1 At 0"`, not `"/cmd ,s,..."`).
 
 Same `wing_offset`-driven mapping is used for LED feedback in reverse.
 
 ### 2.2 LED feedback for wing executors
 
-Plugin polls each mapped executor's `Object:HasActivePlayback()` and `Appearance` (already proven to work in `MA3_OSC_FEEDBACK` plugin, referenced in `docs/grandMA3_practical_guide/07_community_plugins.md`). Generates `/apc/v2/led/grid|button` packets back to the bridge.
+Plugin polls each mapped executor and reads playback state via the executor's `.Object` property, then `:HasActivePlayback()` on that:
+
+```lua
+local exec = GetExecutor(exec_no)
+if not exec then return false end
+local obj = exec.Object
+if not obj then return false end
+return obj:HasActivePlayback()
+```
+
+This is the documented pattern (`docs/grandMA3_practical_guide/03_sequence_cue_executor.md:100-110`) and matches the user's `plugin.txt` (line 22: `exec.Object and exec.Object:HasActivePlayback()`). **Do not call `:HasActivePlayback()` directly on the executor handle** — it must be resolved through `.Object` first.
+
+Cue Appearance for the LED color is read from the active cue's `cue.Appearance.BackR/G/B` (same caveat as §1.3 about float range — pre-flight test). Generates `/apc/v2/led/grid|button` packets back to the bridge.
 
 This is essentially the user's `plugin.txt` pattern (the `executor_table` poll loop) generalized over a wing offset.
 
@@ -367,11 +390,14 @@ Plugin keeps a `last_sent[dev][pad] = {state, color}` table; only sends `/apc/v2
 
 End-to-end testing requires a real MA3 console (or onPC) and at least one APC mini mk2.
 
-**Pre-flight (resolve before merging Phase 0):**
+**Pre-flight (resolve before merging Phase 0; each is flagged "unverified" in `docs/grandMA3_practical_guide/README.md` §Unverified items):**
 
 1. **Pad orientation**: press the four corner pads with the bridge logging notes. Confirm whether note 63 = top-right or bottom-right. Pin in code.
 2. **MA3 Load+Go+ semantics**: in MA3, run `Load Sequence 1 Cue 3` then `Go+ Sequence 1` from the cmdline; confirm cue 3 fires (not cue 4). Repeat with sequence already playing a different cue — confirm hot-swap.
-3. **Appearance float range**: read `someCue.Appearance.BackR` from a cue with a known red color. If value is 255, scale is 0..255; if 1.0, scale is 0..1. Pin in plugin.
+3. **Appearance float range** (docs flag: `docs/grandMA3_practical_guide/03_sequence_cue_executor.md:48-49`): read `someCue.Appearance.BackR` from a cue with a known red color. If value is 255, scale is 0..255; if 1.0, scale is 0..1. Pin in plugin.
+4. **`seq:CurrentChild()` while sequence is Off** (docs flag: `docs/grandMA3_practical_guide/03_sequence_cue_executor.md:66-67`): turn off a sequence and read `seq:CurrentChild()`. Expect either `nil` or the OffCue handle. Code defensively for both.
+5. **`CmdIndirect` semicolon batching**: confirm whether `CmdIndirect("Go+ Sequence 1 ; Go+ Sequence 2")` actually fires both, or whether one-call-per-command is required. (Plan currently uses one-call-per-command, which is unambiguously safe; this test only matters if we ever want to optimize.)
+6. **Cue numbering with fractional values**: create a cue numbered 1.5, verify `cue.No == 1500` and `Cmd(string.format("Load Sequence 1 Cue %g", 1.5))` actually fires it.
 
 **Phase 0 — bridge build sanity:**
 
@@ -452,6 +478,28 @@ Run a show with `apc_color.lua` (legacy plugin) against the v2 bridge. Confirm v
 | 3 — Hardening | Type-tag OSC parser, SysEx serial-pin, diff-LED, README rewrite | 1-2 days | — |
 
 Parallel-ready: Phases 1 and 2 can be implemented concurrently after Phase 0 lands (different files, different code paths).
+
+---
+
+---
+
+## API verification audit — summary
+
+A second-pass review (Explore agent + independent Codex/gpt-5.5 against the docs tree) verified the plan's MA3 Lua usage. Result:
+
+- **Verified against docs** (with file:line citations): `Cmd("Load Sequence X Cue Y")`, `Cmd("Go+ Sequence X")`, `seq:CurrentChild()`, `seq:Children()` (with OffCue/CueZero at indices 1-2), `cue.No / 1000`, `cue.Appearance.BackR/G/B` (property names verified; float range still unverified per docs), `DataPool().Sequences:Children()`, `HookObjectChange` 3-arg form, `SendOSC <slot> "/addr,types,values"`, `Cmd("Page +")`, `Cmd("FaderMaster Page X.Y At Z")`, `coroutine.yield(seconds)`, `Object:Get(prop)`, built-in OSC inbound addresses, 1-based OSC config slot.
+- **Hallucinations corrected** in this revision:
+  - `Cmd("Sequence X At <value>")` was not a valid command — replaced with `seq:SetFader({value=pct})` (object API) in §1.9.
+  - `CmdIndirect(table.concat(cmds, ";"))` semicolon-batching was undocumented — replaced with a loop of separate `CmdIndirect()` calls in §1.7.
+  - Built-in key OSC type tag is `,si,Press|Release,1`, not `,i,1` — fixed in §2.1.
+  - MA3 OSC fader values are percent (0..100), not 0..127 — added scaling note in §1.9 and §2.1.
+  - `SendOSC` formatting requires no spaces around commas in the type-tag string — fixed in §2.1.
+  - `:HasActivePlayback()` must be called on `exec.Object`, not the executor handle directly — fixed in §2.2.
+  - Cue numbers are decimal (display × 1000) — `string.format` switched to `%g` after dividing in §1.5/§1.6.
+- **Unverified-with-doc-support** (called out in pre-flight):
+  - Appearance color float range (0..255 vs 0..1).
+  - `seq:CurrentChild()` return value when sequence is Off.
+  - LuaSocket availability on physical console (sidestepped — plan uses MA3's built-in OSC where the plugin needs to hit MA3, and LuaSocket only for the bridge UDP link, which always runs on the same machine as MA3 onPC or via the show-console's loopback).
 
 ---
 
